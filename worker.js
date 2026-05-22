@@ -42,18 +42,18 @@ function newUrl(urlStr) {
 }
 
 
-addEventListener('fetch', e => {
-  const ret = fetchHandler(e)
-    .catch(err => makeRes('cfworker error:\n' + err.stack, 502))
-  e.respondWith(ret)
-})
+export default {
+  async fetch(request, env, ctx) {
+    return fetchHandler(request)
+      .catch(err => makeRes('cfworker error:\n' + err.stack, 502))
+  },
+}
 
 
 /**
- * @param {FetchEvent} e 
+ * @param {Request} req
  */
-async function fetchHandler(e) {
-  const req = e.request
+async function fetchHandler(req) {
   const urlStr = req.url
   const urlObj = new URL(urlStr)
   const path = urlObj.href.substr(urlObj.origin.length)
@@ -98,7 +98,15 @@ function httpHandler(req, pathname) {
   if (req.method === 'OPTIONS' &&
       reqHdrRaw.has('access-control-request-headers')
   ) {
-    return new Response(null, PREFLIGHT_INIT)
+    const headers = new Headers(PREFLIGHT_INIT.headers)
+    const reqHdr = reqHdrRaw.get('access-control-request-headers')
+    if (reqHdr) {
+      headers.set('access-control-allow-headers', reqHdr)
+    }
+    return new Response(null, {
+      status: PREFLIGHT_INIT.status,
+      headers,
+    })
   }
 
   let acehOld = false
@@ -112,13 +120,21 @@ function httpHandler(req, pathname) {
   // 此处逻辑和 http-dec-req-hdr.lua 大致相同
   // https://github.com/EtherDream/jsproxy/blob/master/lua/http-dec-req-hdr.lua
   const refer = reqHdrNew.get('referer')
-  const query = refer.substr(refer.indexOf('?') + 1)
+  if (!refer) {
+    return makeRes('missing referer', 403)
+  }
+
+  const queryIdx = refer.indexOf('?')
+  if (queryIdx < 0 || queryIdx === refer.length - 1) {
+    return makeRes('missing params', 403)
+  }
+  const query = refer.slice(queryIdx + 1)
   if (!query) {
     return makeRes('missing params', 403)
   }
   const param = new URLSearchParams(query)
 
-  for (const [k, v] of Object.entries(param)) {
+  for (const [k, v] of param.entries()) {
     if (k.substr(0, 2) === '--') {
       // 系统信息
       switch (k.substr(2)) {
@@ -155,7 +171,7 @@ function httpHandler(req, pathname) {
     headers: reqHdrNew,
     redirect: 'manual',
   }
-  if (req.method === 'POST') {
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
     reqInit.body = req.body
   }
   return proxy(urlObj, reqInit, acehOld, rawLen, 0)
